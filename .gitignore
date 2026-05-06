@@ -1,0 +1,22 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 编译产出
+*.o
+*.d
+*.elf
+*.bin
+*.map
+*.hex
+
+# 系统
+.DS_Store
+Thumbs.db
