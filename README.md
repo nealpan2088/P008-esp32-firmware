@@ -12,6 +12,7 @@
 | `esp8266-sensor/` | ESP8266 | DHT22/DS18B20 温湿度传感器 + 电流检测 + 门磁 | v3.4 |
 | `esp01-relay/` | ESP-01 | 继电器远程控制插排固件 | v1.1 |
 | `sct-current-test/` | ESP8266 | SCT-013 电流钳检测测试 | v1.0 |
+| `esp8266-relay/` | ESP8266 | NodeMCU 1路光耦隔离继电器远程控制固件 | v1.0 |
 | `a7670-notifier/` | Arduino/ESP | A7670C 4G 短信通知 Demo | 开发中 |
 
 ## 开发环境
@@ -27,6 +28,14 @@
   pio run -t upload        # 烧录
   ```
 
+## 继电器固件编译
+
+```bash
+cd esp8266-relay
+pio run -e fw-relay-nodemcu -t upload   # NodeMCU 版（默认, D1/GPIO5）
+pio run -e fw-relay-nodemcu-alert -t upload  # 带本地报警版
+```
+
 ## 详细文档
 
 见各固件目录下的 `README.md` + `CHANGELOG.md`。
@@ -35,6 +44,7 @@
 
 | 日期 | 版本 | 说明 |
 |------|------|------|
+| 2026-05-07 | v1.0 | NodeMCU 1路光耦隔离继电器固件（远程控制+手动按钮+本地报警） |
 | 2026-05-06 | - | 独立仓库初始化，从 P008 项目拆分 |
 | 2026-05-02 | v3.4 | 定风版定型 + 电池版 v3.2 |
 | 2026-04-29 | v3.1 | 安全密钥 SHA256 + 动态 reportInterval |
