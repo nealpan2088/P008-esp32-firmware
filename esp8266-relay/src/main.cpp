@@ -1,30 +1,36 @@
 /**
- * P008 Environment Monitor — NodeMCU 1路光耦隔离继电器模块固件
+ * P008 Environment Monitor — NodeMCU 继电器 + SG90 舵机固件
  * -----------------------------------------------------------
- * Hardware:  NodeMCU V3 (ESP8266) + 1路光耦隔离继电器模块
- * Function:  P008 平台远程控制 + 手动按钮控制 + 心跳上报 + 本地报警
+ * Hardware:  NodeMCU V3 (ESP8266) + 1路光耦隔离继电器模块 + SG90 舵机
+ * Function:  远程控制（继电器+舵机）+ 手动按钮 + 心跳上报 + MQTT
  *
  * v1.5 新特性:
  *   - MQTT 实时指令推送（替代 HTTP 长轮询，延迟从 5s 降至 ~100ms）
  *   - HTTP 轮询降级（MQTT 断线时自动切回 HTTP 轮询）
- *   - 两者共存，互不干扰
+ *   - SERVO_ANGLE / SERVO_SWEEP 指令支持 SG90 舵机控制
  *
  * 功能特性:
  *   1. 远程指令控制（POWER_ON / POWER_OFF / TOGGLE / REBOOT）
- *      优先 MQTT 推送，HTTP 轮询兜底
- *   2. 手动按钮控制（短按切换、长按配网）
- *   3. 心跳上报（每 60 秒上报继电器 + 报警状态）
- *   4. 本地报警（云端阈值下发 → 超限 LED 快闪）
- *   5. 离线缓存（WiFi 断线时不丢指令）
+ *   2. 舵机控制（SERVO_ANGLE:角度 / SERVO_SWEEP）
+ *   3. 手动按钮控制（短按切换、长按配网）
+ *   4. 心跳上报（每 60 秒上报继电器 + 舵机角度）
+ *   5. 本地报警（云端阈值下发 → 超限 LED 快闪）
+ *   6. MQTT + HTTP 双模通信，自动降级兜底
  *
  * 接线（NodeMCU → 1路光耦隔离继电器模块）:
- *   继电器模块 IN  → D1 (GPIO5) — 控制信号（低电平触发）
- *   继电器模块 VCC → Vin (5V)   — 线圈供电（部分模块支持 3.3V）
+ *   继电器模块 IN  → D1 (GPIO5) — 控制信号（高电平触发）
+ *   继电器模块 VCC → Vin (5V)
  *   继电器模块 GND → GND
  *   COM/NO/NC       → 按实际负载接
  *
+ * 接线（NodeMCU → SG90 舵机）:
+ *   SG90 棕色线 → GND
+ *   SG90 红色线 → Vin (5V)
+ *   SG90 橙色线 → D2 (GPIO4) — PWM 信号
+ *
  * ⚠️ 高电平触发: 拉高=Led亮/继电器吸合；拉低=LED灭/继电器断开
  * ⚠️ 上电默认断开，避免设备误启动
+ * ⚠️ SG90 舵机不要从 3.3V 取电（电流不够），必须用 Vin (5V)
  *
  * 首次配网:
  *   手机连 P008-Relay 热点 → 192.168.4.1 配 WiFi
@@ -41,10 +47,11 @@
 
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <ESP8266HTTPClient.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
+#include <Servo.h>
 
 #ifdef MQTT_ENABLE
 #include <PubSubClient.h>
@@ -79,6 +86,8 @@ char _autoSerial[32]  = "";
 char _autoKey[64]     = "";
 
 bool _relayState = false;        // true=吸合(通), false=断开(断)
+int _servoAngle = -1;            // -1=未初始化, 0-180=当前角度
+Servo _servo;                    // SG90 舵机对象
 unsigned long _lastPoll = 0;
 unsigned long _lastHeartbeat = 0;
 unsigned long _pollIntervalMs = COMMAND_POLL_INTERVAL_MS;
@@ -159,6 +168,41 @@ void relayToggle() {
   }
 }
 
+// --------------- 舵机控制（SG90）---------------
+// 舵机引脚：D2 (GPIO4) — PWM 输出
+// 接线：🟤GND→GND  🔴VCC→Vin(5V)  🟡信号→D2
+void servoAttach() {
+  _servo.attach(4);  // D2 (GPIO4)
+  LOG_I("Servo", "Attached to D2 (GPIO4)");
+}
+
+void servoSetAngle(int angle) {
+  if (angle < 0) angle = 0;
+  if (angle > 180) angle = 180;
+  _servo.write(angle);
+  _servoAngle = angle;
+  LOG_I("Servo", "Angle set to %d°", angle);
+}
+
+void servoDetach() {
+  _servo.detach();
+  LOG_I("Servo", "Detached (power save)");
+}
+
+void servoSweep() {
+  LOG_I("Servo", "Sweeping 0°→180°→0°...");
+  for (int a = 0; a <= 180; a += 5) {
+    _servo.write(a);
+    delay(15);
+  }
+  for (int a = 180; a >= 0; a -= 5) {
+    _servo.write(a);
+    delay(15);
+  }
+  _servoAngle = 0;
+  LOG_I("Servo", "Sweep done");
+}
+
 // ============================================================
 // WiFi 连接
 // ============================================================
@@ -203,13 +247,13 @@ int reportHeartbeat() {
   char url[256];
   snprintf(url, sizeof(url), "%s/devices/%s/data", apiBaseUrl, deviceSerial);
 
-  char body[300];
+  char body[350];
   snprintf(body, sizeof(body),
     "{\"temp\":null,\"humidity\":null,\"battery\":0,\"otherData\":{"
     "\"firmwareVer\":\"" FIRMWARE_VERSION "\",\"channel\":\"" FIRMWARE_CHANNEL "\","
-    "\"chipId\":\"%s\",\"type\":\"relay\",\"relayOn\":%s"
+    "\"chipId\":\"%s\",\"type\":\"relay\",\"relayOn\":%s,\"servoAngle\":%d"
     "}}",
-    chipIdHex, _relayState ? "true" : "false");
+    chipIdHex, _relayState ? "true" : "false", _servoAngle);
 
   LOG_D("Heartbeat", "POST %s", url);
   wifiClientSecure.setInsecure();
@@ -282,6 +326,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     LOG_I("MQTT Cmd", "Rebooting...");
     delay(500);
     ESP.restart();
+  } else if (strcmp(command, "SERVO_ANGLE") == 0) {
+    int angle = doc["payload"]["angle"] | doc["angle"] | 90;
+    servoAttach();
+    servoSetAngle(angle);
+    delay(500);
+    servoDetach();
+  } else if (strcmp(command, "SERVO_SWEEP") == 0) {
+    servoAttach();
+    servoSweep();
+    servoDetach();
   } else {
     LOG_W("MQTT Cmd", "Unsupported: %s", command);
   }
@@ -393,6 +447,20 @@ int pollCommands() {
         delay(500);
         ESP.restart();
         return 0;
+      } else if (strcmp(cmdType, "SERVO_ANGLE") == 0) {
+        int angle = cmdPayload["angle"] | 90;
+        servoAttach();
+        servoSetAngle(angle);
+        delay(500);
+        servoDetach();
+        executed = true;
+        resultMsg = "servo moved to " + String(angle) + "°";
+      } else if (strcmp(cmdType, "SERVO_SWEEP") == 0) {
+        servoAttach();
+        servoSweep();
+        servoDetach();
+        executed = true;
+        resultMsg = "servo sweep done";
       } else {
         sendCallback(cmdId, "FAILED", "unsupported command type");
         LOG_W("Command", "Unsupported: %s", cmdType);

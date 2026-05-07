@@ -50,16 +50,23 @@
 //   D0=GPIO16  D1=GPIO5  D2=GPIO4  D3=GPIO0
 //   D4=GPIO2   D5=GPIO14 D6=GPIO12 D7=GPIO13 D8=GPIO15
 //
-// 1路光耦隔离继电器模块（默认低电平触发）:
+// 1路光耦隔离继电器模块:
 //   RELAY IO  → D1 (GPIO5) — 继电器控制信号
-//   模块 VCC  → Vin (5V)   — 继电器线圈供电（部分模块支持 3.3V，看模块型号）
+//   模块 VCC  → Vin (5V)   — 继电器线圈供电
 //   模块 GND  → GND
-//   光耦侧无需额外接线，模块板载已集成
 //
-// ⚠️ 低电平触发: digitalWrite(RELAY_PIN, LOW)=吸合(导通)，HIGH=断开
-// ⚠️ 上电初始默认高电平(断开)，避免误触发
+// SG90 舵机:
+//   🟤(棕色) → GND
+//   🔴(红色) → Vin (5V)
+//   🟡(橙色) → D2 (GPIO4) — PWM 信号
+//
+// ⚠️ 高电平触发: digitalWrite(RELAY_PIN, HIGH)=吸合(导通)，LOW=断开
+// ⚠️ 上电初始默认断开，避免误触发
 #ifndef RELAY_PIN
 #define RELAY_PIN       5   // D1 (GPIO5) — 继电器控制
+#endif
+#ifndef SERVO_PIN
+#define SERVO_PIN       4   // D2 (GPIO4) — SG90 舵机 PWM 信号
 #endif
 #ifndef LED_BUILTIN
 #define LED_BUILTIN     2   // D4 (GPIO2) — 板载 LED（低电平亮）
