@@ -174,8 +174,9 @@ void relayToggle() {
 //
 // ⚠️ SG90 标准脉宽 500~2500us，但部分批次可能范围偏窄
 // 如发现角度不匹配，调整 SERVO_MIN_US / SERVO_MAX_US 值
-#define SERVO_MIN_US   500
-#define SERVO_MAX_US   2500
+// 当前值：经过测试 500-2500 范围不够，扩大到 400-2600
+#define SERVO_MIN_US   400
+#define SERVO_MAX_US   2600
 
 void servoAttach() {
   _servo.attach(4, SERVO_MIN_US, SERVO_MAX_US);  // D2 (GPIO4), 指定脉宽范围
