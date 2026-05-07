@@ -8,12 +8,10 @@
 #define CONFIG_H
 
 // --------------- WiFi ---------------
-#ifndef WIFI_SSID
-#define WIFI_SSID     "your_wifi_ssid"
-#endif
-#ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "your_wifi_password"
-#endif
+// ⚠️ WiFi 凭据不由固件硬编码
+// 客户首次配网：手机连 P008-Relay 热点 → 192.168.4.1 → 输入自家 WiFi
+// 之后凭据保存在 ESP8266 RTC 内存中，WiFi.begin() 自动读取
+// 如需重置：长按按钮 >3 秒重新进入配网模式
 
 // --------------- API ---------------
 #ifndef API_BASE_URL
