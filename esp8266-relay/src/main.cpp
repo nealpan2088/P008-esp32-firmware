@@ -4,9 +4,14 @@
  * Hardware:  NodeMCU V3 (ESP8266) + 1路光耦隔离继电器模块
  * Function:  P008 平台远程控制 + 手动按钮控制 + 心跳上报 + 本地报警
  *
+ * v1.5 新特性:
+ *   - MQTT 实时指令推送（替代 HTTP 长轮询，延迟从 5s 降至 ~100ms）
+ *   - HTTP 轮询降级（MQTT 断线时自动切回 HTTP 轮询）
+ *   - 两者共存，互不干扰
+ *
  * 功能特性:
  *   1. 远程指令控制（POWER_ON / POWER_OFF / TOGGLE / REBOOT）
- *      每 5 秒轮询 GET /devices/{serial}/commands/pending
+ *      优先 MQTT 推送，HTTP 轮询兜底
  *   2. 手动按钮控制（短按切换、长按配网）
  *   3. 心跳上报（每 60 秒上报继电器 + 报警状态）
  *   4. 本地报警（云端阈值下发 → 超限 LED 快闪）
@@ -18,7 +23,7 @@
  *   继电器模块 GND → GND
  *   COM/NO/NC       → 按实际负载接
  *
- * ⚠️ 低电平触发: 拉低=Led亮/继电器吸合；拉高=LED灭/继电器断开
+ * ⚠️ 高电平触发: 拉高=Led亮/继电器吸合；拉低=LED灭/继电器断开
  * ⚠️ 上电默认断开，避免设备误启动
  *
  * 首次配网:
@@ -41,6 +46,10 @@
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
 
+#ifdef MQTT_ENABLE
+#include <PubSubClient.h>
+#endif
+
 #include "config.h"
 #include "log.h"
 #include "alert.h"
@@ -50,6 +59,17 @@
 // ============================================================
 WiFiClientSecure wifiClientSecure;
 HTTPClient http;
+
+WiFiClient wifiClient;          // 普通 WiFi 客户端（用于 MQTT plain）
+WiFiClientSecure wifiClientTls;  // TLS WiFi 客户端（用于 MQTT over TLS）
+#ifdef MQTT_ENABLE
+// 根据端口选择是否使用 TLS
+#if MQTT_BROKER_PORT == 8883
+PubSubClient mqttClient(wifiClientTls);
+#else
+PubSubClient mqttClient(wifiClient);
+#endif
+#endif
 
 char deviceSerial[32] = "";
 char deviceKey[64]    = "";
@@ -62,6 +82,8 @@ bool _relayState = false;        // true=吸合(通), false=断开(断)
 unsigned long _lastPoll = 0;
 unsigned long _lastHeartbeat = 0;
 unsigned long _pollIntervalMs = COMMAND_POLL_INTERVAL_MS;
+unsigned long _lastMqttAttempt = 0;
+bool _mqttEnabled = false;
 
 // 手动按钮消抖
 unsigned long _lastBtnDebounce = 0;
@@ -69,6 +91,9 @@ bool _lastBtnState = HIGH;
 bool _btnState = HIGH;
 unsigned long _btnPressStart = 0;
 bool _btnPressed = false;
+
+// MQTT Topic 缓存
+char _cmdTopic[64] = "";
 
 // ============================================================
 // HMAC 密钥生成
@@ -106,6 +131,9 @@ void loadParams() {
   strncpy(deviceSerial, _autoSerial, sizeof(deviceSerial) - 1);
   strncpy(deviceKey, _autoKey, sizeof(deviceKey) - 1);
   LOG_I("Config", "Serial: %s", deviceSerial);
+
+  // 构建 MQTT Topic: p008/{serial}/command
+  snprintf(_cmdTopic, sizeof(_cmdTopic), "%s/%s/command", MQTT_TOPIC_PREFIX, deviceSerial);
 }
 
 // --------------- 继电器控制 ---------------
@@ -217,12 +245,93 @@ int reportHeartbeat() {
 }
 
 // ============================================================
+// MQTT 回调 — 收到指令时执行
+// ============================================================
+#ifdef MQTT_ENABLE
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // 解析 JSON payload
+  char buf[256];
+  unsigned int len = length < sizeof(buf) - 1 ? length : sizeof(buf) - 1;
+  memcpy(buf, payload, len);
+  buf[len] = '\0';
+
+  LOG_D("MQTT", "Received: %s", buf);
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, buf);
+  if (err) {
+    LOG_W("MQTT", "JSON parse error: %s", err.c_str());
+    return;
+  }
+
+  const char* command = doc["command"];
+  if (!command) {
+    LOG_W("MQTT", "No command field in MQTT message");
+    return;
+  }
+
+  LOG_I("MQTT Cmd", "Executing: %s", command);
+
+  if (strcmp(command, "POWER_ON") == 0) {
+    relayOn();
+  } else if (strcmp(command, "POWER_OFF") == 0) {
+    relayOff();
+  } else if (strcmp(command, "TOGGLE") == 0) {
+    relayToggle();
+  } else if (strcmp(command, "REBOOT") == 0) {
+    LOG_I("MQTT Cmd", "Rebooting...");
+    delay(500);
+    ESP.restart();
+  } else {
+    LOG_W("MQTT Cmd", "Unsupported: %s", command);
+  }
+}
+
+void connectMQTT() {
+  if (!_mqttEnabled || WiFi.status() != WL_CONNECTED) return;
+
+  LOG_I("MQTT", "Connecting to %s:%d...", MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+  mqttClient.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+  mqttClient.setCallback(mqttCallback);
+
+#if MQTT_BROKER_PORT == 8883
+  // TLS 连接，跳过证书验证（ESP8266 无 RTC，无法验证证书有效期）
+  wifiClientTls.setInsecure();
+#endif
+
+  char clientId[32];
+  snprintf(clientId, sizeof(clientId), "relay-%s", deviceSerial);
+
+  if (mqttClient.connect(clientId)) {
+    LOG_I("MQTT", "Connected as %s", clientId);
+    mqttClient.subscribe(_cmdTopic);
+    LOG_I("MQTT", "Subscribed to %s", _cmdTopic);
+  } else {
+    LOG_W("MQTT", "Failed (state=%d)", mqttClient.state());
+  }
+}
+
+void maintainMQTT() {
+  if (!_mqttEnabled) return;
+  if (!mqttClient.connected()) {
+    unsigned long now = millis();
+    if (now - _lastMqttAttempt > MQTT_RECONNECT_DELAY_MS) {
+      _lastMqttAttempt = now;
+      connectMQTT();
+    }
+  } else {
+    mqttClient.loop();
+  }
+}
+#endif
+
+// ============================================================
 // 指令执行回执（前置声明）
 // ============================================================
 void sendCallback(const char* commandId, const char* status, const char* result);
 
 // ============================================================
-// 轮询待执行指令
+// 轮询待执行指令（HTTP 兜底）
 // ============================================================
 int pollCommands() {
   if (WiFi.status() != WL_CONNECTED) return -1;
@@ -241,7 +350,6 @@ int pollCommands() {
     String payload = http.getString();
     http.end();
 
-    // 解析 JSON
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload);
     if (err) {
@@ -408,7 +516,6 @@ void setup() {
   digitalWrite(LED_BUILTIN, HIGH);        // LED 灭（断开状态）
 
   // ---------- 配网检测 ----------
-  // 按住 FLASH 按钮上电 → 释放 → 进入配网
   pinMode(BTN_PIN, INPUT_PULLUP);
   int holdMs = 0;
   unsigned long bootStart = millis();
@@ -439,6 +546,14 @@ void setup() {
     return;
   }
 
+#ifdef MQTT_ENABLE
+  _mqttEnabled = true;
+  LOG_I("MQTT", "MQTT enabled, broker=%s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+  connectMQTT();
+#else
+  LOG_I("MQTT", "MQTT disabled (compile without MQTT_ENABLE)");
+#endif
+
   // ---------- 首次心跳（自动注册） ----------
   int hbCode = reportHeartbeat();
   if (hbCode == 200 || hbCode == 201) {
@@ -455,7 +570,9 @@ void setup() {
     delay(150);
   }
 
-  LOG_I("Main", "Ready. Polling commands every %lu ms", _pollIntervalMs);
+  LOG_I("Main", "Ready. MQTT=%s, Poll=%lu ms",
+    _mqttEnabled ? "ON" : "OFF",
+    _pollIntervalMs);
 }
 
 // ============================================================
@@ -478,8 +595,19 @@ void loop() {
 
   unsigned long now = millis();
 
-  // ---------- 指令轮询 ----------
-  if (now - _lastPoll >= _pollIntervalMs) {
+  // ---------- MQTT 保活 ----------
+#ifdef MQTT_ENABLE
+  maintainMQTT();
+#endif
+
+  // ---------- 指令轮询（HTTP 兜底） ----------
+  // 仅在 MQTT 未连接时执行 HTTP 轮询，减少不必要的 HTTP 请求
+  bool shouldPollHttp = !_mqttEnabled;
+#ifdef MQTT_ENABLE
+  shouldPollHttp = !mqttClient.connected();
+#endif
+
+  if (shouldPollHttp && (now - _lastPoll >= _pollIntervalMs)) {
     _lastPoll = now;
     pollCommands();
   }

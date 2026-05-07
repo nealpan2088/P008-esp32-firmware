@@ -66,15 +66,15 @@
 #endif
 
 // --------------- 继电器逻辑 ---------------
-// 低电平触发继电器：
-//   RELAY_PULL = LOW   → 吸合（设备通电）
-//   RELAY_RELEASE = HIGH → 断开（设备断电）
+// 高电平触发继电器：
+//   RELAY_PULL = HIGH  → 吸合（设备通电）
+//   RELAY_RELEASE = LOW → 断开（设备断电）
 //   INITIAL_STATE = RELAY_RELEASE → 上电默认断开（安全）
 #ifndef RELAY_PULL
-#define RELAY_PULL      LOW     // 吸合
+#define RELAY_PULL      HIGH    // 吸合
 #endif
 #ifndef RELAY_RELEASE
-#define RELAY_RELEASE   HIGH    // 断开
+#define RELAY_RELEASE   LOW     // 断开
 #endif
 #ifndef RELAY_INIT
 #define RELAY_INIT      RELAY_RELEASE  // 初始状态：断开
@@ -99,6 +99,22 @@
 // --------------- 心跳上报 ---------------
 #ifndef HEARTBEAT_INTERVAL_MS
 #define HEARTBEAT_INTERVAL_MS 60000     // 每 60 秒上报一次在线状态
+#endif
+
+// --------------- MQTT ---------------
+// 公网连接：zghj.openyun.xin:8883（TLS）
+// 内网连接：192.168.x.x:1883（原生）
+#ifndef MQTT_BROKER_HOST
+#define MQTT_BROKER_HOST "zghj.openyun.xin"
+#endif
+#ifndef MQTT_BROKER_PORT
+#define MQTT_BROKER_PORT 8883
+#endif
+#ifndef MQTT_TOPIC_PREFIX
+#define MQTT_TOPIC_PREFIX "p008"
+#endif
+#ifndef MQTT_RECONNECT_DELAY_MS
+#define MQTT_RECONNECT_DELAY_MS 5000    // MQTT 重连间隔
 #endif
 
 // --------------- 本地控制（手动开关按钮） ---------------
