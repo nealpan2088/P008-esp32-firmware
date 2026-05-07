@@ -170,10 +170,16 @@ void relayToggle() {
 
 // --------------- 舵机控制（SG90）---------------
 // 舵机引脚：D2 (GPIO4) — PWM 输出
-// 接线：🟤GND→GND  🔴VCC→Vin(5V)  🟡信号→D2
+// 接线：⚫GND→GND  🔴VCC→Vin(5V)  🟡信号→D2
+//
+// ⚠️ SG90 标准脉宽 500~2500us，但部分批次可能范围偏窄
+// 如发现角度不匹配，调整 SERVO_MIN_US / SERVO_MAX_US 值
+#define SERVO_MIN_US   500
+#define SERVO_MAX_US   2500
+
 void servoAttach() {
-  _servo.attach(4);  // D2 (GPIO4)
-  LOG_I("Servo", "Attached to D2 (GPIO4)");
+  _servo.attach(4, SERVO_MIN_US, SERVO_MAX_US);  // D2 (GPIO4), 指定脉宽范围
+  LOG_I("Servo", "Attached to D2 (GPIO4), range %d-%d us", SERVO_MIN_US, SERVO_MAX_US);
 }
 
 void servoSetAngle(int angle) {
