@@ -4,7 +4,7 @@
 // 通过 MQTT 接收后端报警消息，驱动 A7670C 4G 模块发送短信
 //
 // 工作流程:
-//   1. 连接 WiFi
+//   1. WiFiManager 配网（首次烧录后开热点配 WiFi）
 //   2. 连接 MQTT Broker，订阅 p008/sms/alert
 //   3. 初始化 A7670C 模块，检查 SIM 卡和信号
 //   4. 收到 MQTT 消息 → 解析 JSON → 驱动 A7670C 发短信
@@ -13,6 +13,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include "config.h"
@@ -29,10 +30,13 @@ HardwareSerial A7670CSerial(2);   // UART2
 
 // 系统状态
 unsigned long _lastHeartbeat = 0;
-int _signalStrength = 0;          // 0-31, 99=未知
+int _signalStrength = 99;          // 0-31, 99=未知
 bool _simReady = false;
-bool _mqttConnected = false;
 unsigned long _lastReconnectAttempt = 0;
+bool _wifiConfigured = false;
+
+// WiFiManager
+WiFiManager _wifiManager;
 
 // 待发送短信队列（最多缓存 10 条）
 #define SMS_QUEUE_MAX 10
@@ -67,45 +71,57 @@ bool sendAT(const char* cmd, const char* expect, unsigned long timeoutMs) {
       if (pos < (int)sizeof(buf) - 1) buf[pos++] = c;
     }
     if (strstr(buf, expect)) {
-      LOG_D("A7670C", "AT OK: %s → %s", cmd, buf);
+      LOG_D("A7670C", "AT OK: %s", cmd);
       return true;
     }
     delay(10);
   }
 
-  LOG_W("A7670C", "AT TIMEOUT: %s (expect=%s, got=%s)", cmd, expect, buf);
+  LOG_W("A7670C", "AT TIMEOUT: %s (expect=%s)", cmd, expect);
   return false;
+}
+
+// 读取 AT 命令返回的完整响应
+void readATResponse(char* buf, int bufSize, unsigned long timeoutMs) {
+  unsigned long start = millis();
+  int pos = 0;
+  memset(buf, 0, bufSize);
+
+  while (millis() - start < timeoutMs) {
+    while (A7670CSerial.available() && pos < bufSize - 1) {
+      char c = A7670CSerial.read();
+      if (c >= 32 && c <= 126) buf[pos++] = c;  // 只保留可打印字符
+    }
+    if (pos > 0 && (strstr(buf, "OK") || strstr(buf, "ERROR"))) break;
+    delay(10);
+  }
 }
 
 // 初始化 A7670C
 bool initA7670C() {
   LOG_I("A7670C", "Initializing...");
 
-  // 复位模块
-  sendAT("AT+CRESET", "OK", 3000);
-  delay(3000);
-
-  // 检查模块响应
-  if (!sendAT("AT", "OK", 2000)) {
-    LOG_E("A7670C", "Module not responding");
-    return false;
+  // 先尝试发 AT，看模块是否已经开机
+  if (sendAT("AT", "OK", 2000)) {
+    LOG_I("A7670C", "Module already awake");
+  } else {
+    LOG_I("A7670C", "Module not responding yet, sending AT again...");
+    delay(1000);
+    if (!sendAT("AT", "OK", 3000)) {
+      LOG_E("A7670C", "Module not responding, check power and PWR_KEY");
+      return false;
+    }
   }
 
   // 查询信号质量
-  if (sendAT("AT+CSQ", "+CSQ:", 3000)) {
-    // 解析信号值
-    char buf[64];
-    int pos = 0;
-    memset(buf, 0, sizeof(buf));
-    while (A7670CSerial.available() && pos < 63) {
-      buf[pos++] = A7670CSerial.read();
-    }
-    // 提取 +CSQ 后面的数字
-    char* csqStr = strstr(buf, "+CSQ:");
-    if (csqStr) {
-      csqStr += 6; // skip "+CSQ: "
-      _signalStrength = atoi(csqStr);
-    }
+  char buf[128];
+  sendAT("AT+CSQ", "+CSQ:", 2000);
+  readATResponse(buf, sizeof(buf), 1000);
+  char* csqStr = strstr(buf, "+CSQ:");
+  if (csqStr) {
+    csqStr += 6;
+    while (*csqStr && (*csqStr < '0' || *csqStr > '9')) csqStr++;
+    if (*csqStr) _signalStrength = atoi(csqStr);
   }
 
   // 检查 SIM 卡
@@ -120,7 +136,7 @@ bool initA7670C() {
   sendAT("AT+CSCS=\"GSM\"", "OK", 2000);
 
   LOG_I("A7670C", "Init done. Signal: %d, SIM: %s", _signalStrength, _simReady ? "READY" : "NO SIM");
-  return true;
+  return _simReady;
 }
 
 // 发送短信
@@ -136,37 +152,30 @@ bool sendSms(const char* phone, const char* message) {
   }
 
   // 发送短信内容 + Ctrl+Z 结束
-  // 注意：TEXT 模式下内容不能包含某些特殊字符
   A7670CSerial.print(message);
   A7670CSerial.write(26);  // Ctrl+Z
   A7670CSerial.print("\r\n");
 
-  // 等待发送完成响应
-  delay(3000);
+  // 等待 +CMGS 响应
   if (sendAT("", "+CMGS:", 8000)) {
     LOG_I("SMS", "Sent successfully");
     return true;
   }
 
-  LOG_E("SMS", "Send failed (timeout or error)");
+  LOG_E("SMS", "Send failed (timeout)");
   return false;
 }
 
-// 查询信号强度（更新 _signalStrength）
+// 更新信号强度
 void updateSignal() {
-  if (sendAT("AT+CSQ", "+CSQ:", 2000)) {
-    delay(100);
-    char buf[64];
-    int pos = 0;
-    memset(buf, 0, sizeof(buf));
-    while (A7670CSerial.available() && pos < 63) {
-      buf[pos++] = A7670CSerial.read();
-    }
-    char* csqStr = strstr(buf, "+CSQ:");
-    if (csqStr) {
-      csqStr += 6;
-      _signalStrength = atoi(csqStr);
-    }
+  char buf[64];
+  sendAT("AT+CSQ", "+CSQ:", 2000);
+  readATResponse(buf, sizeof(buf), 1000);
+  char* csqStr = strstr(buf, "+CSQ:");
+  if (csqStr) {
+    csqStr += 6;
+    while (*csqStr && (*csqStr < '0' || *csqStr > '9')) csqStr++;
+    if (*csqStr) _signalStrength = atoi(csqStr);
   }
 }
 
@@ -174,7 +183,6 @@ void updateSignal() {
 // MQTT 回调 — 收到报警消息
 // ============================================================
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  // 转成 null-terminated 字符串
   char buf[512];
   unsigned int len = length < sizeof(buf) - 1 ? length : sizeof(buf) - 1;
   memcpy(buf, payload, len);
@@ -182,7 +190,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   LOG_I("MQTT", "Received: %s", buf);
 
-  // 解析 JSON
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, buf);
   if (error) {
@@ -212,7 +219,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   _smsQueue[_smsQueueTail].active = true;
   _smsQueueTail = nextTail;
 
-  LOG_I("SMS", "Queued: to=%s, id=%s (queue size=%d)", phone, alertId, (_smsQueueTail - _smsQueueHead + SMS_QUEUE_MAX) % SMS_QUEUE_MAX);
+  LOG_I("SMS", "Queued: to=%s (queue=%d)", phone, (_smsQueueTail - _smsQueueHead + SMS_QUEUE_MAX) % SMS_QUEUE_MAX);
 }
 
 // ============================================================
@@ -222,18 +229,16 @@ bool connectMQTT() {
   if (!mqttClient.connected()) {
     LOG_I("MQTT", "Connecting to %s:%d...", MQTT_BROKER, MQTT_PORT);
 
-    if (mqttClient.connect(MQTT_CLIENT_ID)) {
+    // 设置遗嘱消息：网关离线时通知
+    bool ok = mqttClient.connect(MQTT_CLIENT_ID, MQTT_TOPIC_STATUS, 0, true, "{\"status\":\"offline\"}");
+
+    if (ok) {
       LOG_I("MQTT", "Connected as %s", MQTT_CLIENT_ID);
-
-      // 订阅报警 Topic
       mqttClient.subscribe(MQTT_TOPIC_ALERT);
-      LOG_I("MQTT", "Subscribed to %s", MQTT_TOPIC_ALERT);
-
-      _mqttConnected = true;
+      LOG_I("MQTT", "Subscribed: %s", MQTT_TOPIC_ALERT);
       return true;
     } else {
       LOG_W("MQTT", "Connect failed, rc=%d", mqttClient.state());
-      _mqttConnected = false;
       return false;
     }
   }
@@ -252,17 +257,19 @@ void sendStatus(const char* alertId, const char* status, const char* error) {
 
   char buf[256];
   serializeJson(doc, buf);
-  mqttClient.publish(MQTT_TOPIC_STATUS, buf);
-  LOG_D("MQTT", "Status sent: %s", buf);
+
+  if (mqttClient.beginPublish(MQTT_TOPIC_STATUS, strlen(buf), false)) {
+    mqttClient.print(buf);
+    mqttClient.endPublish();
+  }
 }
 
 // ============================================================
 // 处理短信队列
 // ============================================================
 void processSmsQueue() {
-  if (_smsQueueHead == _smsQueueTail) return; // 队列为空
+  if (_smsQueueHead == _smsQueueTail) return;
 
-  // 节流：两次发送间隔至少 5 秒
   if (millis() - _lastSmsSend < SMS_BATCH_INTERVAL_MS) return;
 
   SmsTask& task = _smsQueue[_smsQueueHead];
@@ -294,8 +301,19 @@ void reportHeartbeat() {
 
   char buf[256];
   serializeJson(doc, buf);
-  mqttClient.publish("p008/sms/status", buf);
-  LOG_D("Heartbeat", "Sent: %s", buf);
+
+  if (mqttClient.beginPublish(MQTT_TOPIC_STATUS, strlen(buf), false)) {
+    mqttClient.print(buf);
+    mqttClient.endPublish();
+  }
+}
+
+// ============================================================
+// WiFiManager 配置保存回调
+// ============================================================
+void wifiSaveCallback() {
+  LOG_I("WiFi", "Configuration saved, restarting...");
+  _wifiConfigured = true;
 }
 
 // ============================================================
@@ -305,31 +323,31 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   delay(500);
 
-  LOG_I("Boot", "P008 SMS Gateway v1.0");
+  LOG_I("Boot", "P008 SMS Gateway v0.1.0");
   LOG_I("Boot", "Flash: %d KB", ESP.getFlashChipSize() / 1024);
 
-  // ---------- 初始化 A7670C ----------
+  // ---------- 初始化 A7670C 串口 ----------
   A7670CSerial.begin(A7670C_BAUD, SERIAL_8N1, A7670C_RX_PIN, A7670C_TX_PIN);
-  LOG_I("A7670C", "UART2 initialized (RX=%d, TX=%d, baud=%d)", A7670C_RX_PIN, A7670C_TX_PIN, A7670C_BAUD);
+  LOG_I("A7670C", "UART2 (RX=%d, TX=%d, baud=%d)", A7670C_RX_PIN, A7670C_TX_PIN, A7670C_BAUD);
 
-  // ---------- 连接 WiFi ----------
-  LOG_I("WiFi", "Connecting to %s...", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  WiFi.setAutoReconnect(true);
+  // ---------- WiFiManager 配网 ----------
+  LOG_I("WiFi", "Starting WiFiManager...");
+  _wifiManager.setTitle("P008 SMS Gateway");
+  _wifiManager.setConfigPortalTimeout(WM_PORTAL_TIMEOUT);
+  _wifiManager.setSaveConfigCallback(wifiSaveCallback);
+  _wifiManager.setConnectTimeout(15);
 
-  int retries = 0;
-  while (WiFi.status() != WL_CONNECTED && retries < 30) {
-    delay(1000);
-    retries++;
-    Serial.print(".");
+  // 不保存 WiFi 凭据到额外参数，WiFiManager 自动管理
+  bool connected = _wifiManager.autoConnect(WIFI_MANAGER_AP_NAME, WIFI_MANAGER_AP_PASS);
+
+  if (!connected) {
+    LOG_E("WiFi", "WiFiManager failed after %d seconds", WM_PORTAL_TIMEOUT);
+    LOG_E("WiFi", "Restarting to try again...");
+    delay(2000);
+    ESP.restart();
   }
-  Serial.println();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    LOG_E("WiFi", "Failed to connect after 30s");
-  } else {
-    LOG_I("WiFi", "Connected, IP: %s", WiFi.localIP().toString().c_str());
-  }
+  LOG_I("WiFi", "Connected, IP: %s", WiFi.localIP().toString().c_str());
 
   // ---------- 初始化 MQTT ----------
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
