@@ -132,41 +132,7 @@ bool initA7670C() {
   return _simReady;
 }
 
-// 中文 UCS2 编码转换（将 UTF-8 字符串转为 4 位 HEX 的 UCS2）
-void utf8ToUcs2Hex(const char* utf8, char* hexOut, size_t maxLen) {
-  size_t pos = 0;
-  while (*utf8 && pos < maxLen - 5) {
-    uint32_t codepoint = 0;
-    uint8_t c = *utf8;
-
-    if (c < 0x80) {
-      codepoint = c;
-      utf8++;
-    } else if ((c & 0xE0) == 0xC0) {
-      codepoint = c & 0x1F;
-      codepoint = (codepoint << 6) | (utf8[1] & 0x3F);
-      utf8 += 2;
-    } else if ((c & 0xF0) == 0xE0) {
-      codepoint = c & 0x0F;
-      codepoint = (codepoint << 6) | (utf8[1] & 0x3F);
-      codepoint = (codepoint << 6) | (utf8[2] & 0x3F);
-      utf8 += 3;
-    } else {
-      utf8++; // skip 4-byte (not supported in GSM UCS2)
-      continue;
-    }
-
-    if (codepoint <= 0xFFFF) {
-      pos += snprintf(hexOut + pos, maxLen - pos, "%04X", (unsigned int)codepoint);
-    } else {
-      // BMP only, skip surrogates
-      continue;
-    }
-  }
-  hexOut[pos] = '\0';
-}
-
-// 发送短信（支持中文 UCS2 编码）
+// 发送短信（使用 TEXT 模式，英文/数字）
 bool sendSms(const char* phone, const char* message) {
   LOG_I("SMS", "Sending to %s: %s", phone, message);
 
@@ -176,32 +142,16 @@ bool sendSms(const char* phone, const char* message) {
     return false;
   }
 
-  // 设置为 UCS2 编码（支持中文）
-  if (!sendAT("AT+CSCS=\"UCS2\"", "OK", 2000)) {
-    LOG_E("SMS", "Failed to set UCS2 encoding");
-    return false;
-  }
-
-  // 手机号直接用纯数字（TEXT 模式下 UCS2 编码手机号某些模块不支持）
+  // AT+CMGS="13800138000"
   char cmd[96];
   snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phone);
   if (!sendAT(cmd, ">", SMS_TIMEOUT_MS)) {
-    // 纯数字不行，试试 UCS2 编码的手机号
-    char phoneUcs2[32];
-    utf8ToUcs2Hex(phone, phoneUcs2, sizeof(phoneUcs2));
-    snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phoneUcs2);
-    if (!sendAT(cmd, ">", SMS_TIMEOUT_MS)) {
-      LOG_E("SMS", "Failed to enter SMS mode");
-      return false;
-    }
+    LOG_E("SMS", "Failed to enter SMS mode");
+    return false;
   }
 
-  // 短信内容转为 UCS2 HEX
-  char msgUcs2[512];
-  utf8ToUcs2Hex(message, msgUcs2, sizeof(msgUcs2));
-
-  // 发送 UCS2 编码的短信内容 + Ctrl+Z 结束
-  A7670CSerial.print(msgUcs2);
+  // 发送短信内容 + Ctrl+Z 结束
+  A7670CSerial.print(message);
   A7670CSerial.write(26);  // Ctrl+Z
   A7670CSerial.print("\r\n");
 
