@@ -338,7 +338,7 @@ void setup() {
   _wifiManager.setConnectTimeout(15);
 
   // 不保存 WiFi 凭据到额外参数，WiFiManager 自动管理
-  bool connected = _wifiManager.autoConnect(WIFI_MANAGER_AP_NAME, WIFI_MANAGER_AP_PASS);
+  bool connected = _wifiManager.autoConnect(WIFI_MANAGER_AP_NAME);
 
   if (!connected) {
     LOG_E("WiFi", "WiFiManager failed after %d seconds", WM_PORTAL_TIMEOUT);
