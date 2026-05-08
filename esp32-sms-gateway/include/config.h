@@ -5,10 +5,7 @@
 // 通过 WiFiManager 配网，不需要硬编码
 // 首次烧录后，ESP32 会开热点 "P008-SMS-Gateway"，连上后配置 WiFi
 #ifndef WIFI_MANAGER_AP_NAME
-#define WIFI_MANAGER_AP_NAME   "P008-SMS-Gateway"
-#endif
-#ifndef WIFI_MANAGER_AP_PASS
-#define WIFI_MANAGER_AP_PASS   "config123"
+#define WIFI_MANAGER_AP_NAME   "P008-SMS-Gateway"  // 无密码，连上直接配网
 #endif
 
 // --------------- MQTT 配置 ---------------

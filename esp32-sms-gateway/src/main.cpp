@@ -182,19 +182,21 @@ bool sendSms(const char* phone, const char* message) {
     return false;
   }
 
-  // 将手机号转为 UCS2 HEX
-  char phoneUcs2[32];
-  utf8ToUcs2Hex(phone, phoneUcs2, sizeof(phoneUcs2));
-
-  // AT+CMGS="0031003800..."（UCS2 编码的手机号）
+  // 手机号直接用纯数字（TEXT 模式下 UCS2 编码手机号某些模块不支持）
   char cmd[96];
-  snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phoneUcs2);
+  snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phone);
   if (!sendAT(cmd, ">", SMS_TIMEOUT_MS)) {
-    LOG_E("SMS", "Failed to enter SMS mode");
-    return false;
+    // 纯数字不行，试试 UCS2 编码的手机号
+    char phoneUcs2[32];
+    utf8ToUcs2Hex(phone, phoneUcs2, sizeof(phoneUcs2));
+    snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phoneUcs2);
+    if (!sendAT(cmd, ">", SMS_TIMEOUT_MS)) {
+      LOG_E("SMS", "Failed to enter SMS mode");
+      return false;
+    }
   }
 
-  // 将短信内容转为 UCS2 HEX
+  // 短信内容转为 UCS2 HEX
   char msgUcs2[512];
   utf8ToUcs2Hex(message, msgUcs2, sizeof(msgUcs2));
 
