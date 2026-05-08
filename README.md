@@ -13,7 +13,7 @@
 | `esp01-relay/` | ESP-01 | 继电器远程控制插排固件 | v1.1 |
 | `sct-current-test/` | ESP8266 | SCT-013 电流钳检测测试 | v1.0 |
 | `esp8266-relay/` | ESP8266 | NodeMCU 1路光耦隔离继电器远程控制固件（MQTT + HTTP 双模） | v1.1 |
-| `a7670-notifier/` | Arduino/ESP | A7670C 4G 短信通知 Demo | 开发中 |
+| `esp32-sms-gateway/` | ESP32-S3 | A7670C 4G 短信报警网关 | **v0.1.1** |
 
 ## 开发环境
 

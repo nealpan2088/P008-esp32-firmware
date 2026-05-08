@@ -7,8 +7,17 @@
 - 使用 WiFiClient（普通 HTTP）替代 WiFiClientSecure
 
 ### 新增
-- speedtest 舵机执行后立即 reportHeartbeat() 上报状态
+- speedtest 舵机指令执行后立即 reportHeartbeat() 上报状态
 - CONTRIBUTING.md 固件开发规范
+- 舵机 ANGLE/SWEEP/SPEEDTEST 三种指令控制
+
+### 修复
+- HTTPS TLS 握手内存不足导致 http.POST() 返回 -1
+- 移除 WiFiClientSecure + BearSSL 依赖，释放 ~10KB 堆内存
+
+### 备注
+- DHT22/DS18B20 传感器固件无需重烧（传感器 TLS 负载小，HTTPS 运行正常）
+- 仅 RELAY 系列固件需要此修复
 
 ## [1.0] - 2026-05-07
 ### 功能

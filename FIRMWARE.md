@@ -8,7 +8,7 @@
 | `esp8266-sensor` | NodeMCU V3 | DHT22/DS18B20/MQ-135/门磁 | v3.4 | HTTPS |
 | `esp01-relay` | ESP-01 | 1路继电器（最小化） | v1.1 | HTTPS |
 | `sct-current-test` | NodeMCU V3 | SCT-013-000 电流测试 | v1.0 | HTTPS |
-| `esp32-sms-gateway` | ESP32 DevKit | 4G 短信报警网关 (A7670C) | v0.1.0 | WiFi + MQTT |
+| `esp32-sms-gateway` | ESP32-S3 DevKit | 4G 短信报警网关 (A7670C) | **v0.1.1** | WiFi + MQTT |
 
 ## 快速链接
 - [esp8266-relay 文档](esp8266-relay/README.md)
