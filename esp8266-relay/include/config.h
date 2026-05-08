@@ -15,7 +15,7 @@
 
 // --------------- API ---------------
 #ifndef API_BASE_URL
-#define API_BASE_URL  "https://zghj.openyun.xin/api/v1"
+#define API_BASE_URL  "http://zghj.openyun.xin/api/v1"
 #endif
 
 // --------------- 自动序列号前缀 ---------------

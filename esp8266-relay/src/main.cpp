@@ -263,8 +263,8 @@ int reportHeartbeat() {
     chipIdHex, _relayState ? "true" : "false", _servoAngle);
 
   LOG_D("Heartbeat", "POST %s", url);
-  wifiClientSecure.setInsecure();
-  http.begin(wifiClientSecure, url);
+  
+  http.begin(wifiClient, url);
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Device-Key", deviceKey);
@@ -400,8 +400,8 @@ int pollCommands() {
   char url[256];
   snprintf(url, sizeof(url), "%s/devices/%s/commands/pending", apiBaseUrl, deviceSerial);
 
-  wifiClientSecure.setInsecure();
-  http.begin(wifiClientSecure, url);
+  
+  http.begin(wifiClient, url);
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("X-Device-Key", deviceKey);
 
