@@ -3,8 +3,8 @@
 
 #include <Arduino.h>
 
-#define UART2_RX  16
-#define UART2_TX  17
+#define UART2_RX  18
+#define UART2_TX  19
 #define LED  LED_BUILTIN
 
 void setup() {

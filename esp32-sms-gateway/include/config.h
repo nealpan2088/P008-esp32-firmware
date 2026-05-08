@@ -31,10 +31,10 @@
 
 // --------------- A7670C 串口 ---------------
 #ifndef A7670C_RX_PIN
-#define A7670C_RX_PIN   16    // ESP32 RX2 → A7670C TX
+#define A7670C_RX_PIN   18    // ESP32 RX2 → A7670C TX
 #endif
 #ifndef A7670C_TX_PIN
-#define A7670C_TX_PIN   17    // ESP32 TX2 → A7670C RX
+#define A7670C_TX_PIN   19    // ESP32 TX2 → A7670C RX
 #endif
 #ifndef A7670C_BAUD
 #define A7670C_BAUD     115200
