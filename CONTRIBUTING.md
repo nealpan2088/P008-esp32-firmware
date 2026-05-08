@@ -43,3 +43,41 @@
 - 不要硬编码上报间隔，始终从云端心跳返回的 `reportInterval` 读取
 - 舵机执行完毕必须 `detach()` 省电
 - 控制指令执行结果写在 `otherData` 中的对应字段
+
+## MQTT Topic 规范
+
+| Topic | 方向 | 用途 | 消息格式 |
+|-------|------|------|----------|
+| `p008/commands/{serial}` | 后端 → 固件 | 控制指令 | `{"command":"SERVO_ANGLE","payload":{"angle":90}}` |
+| `p008/sms/alert` | 后端 → ESP32 | 短信报警推送 | `{"to":"138...","message":"...","id":"alert-xxx"}` |
+| `p008/sms/status` | ESP32 → 后端 | 短信发送回执 | `{"id":"alert-xxx","status":"sent/failed","error":null}` |
+
+## 固件目录规范
+
+| 文件 | 必须？ | 说明 |
+|------|--------|------|
+| `VERSION` | ✅ | 纯版本号，如 `1.0` |
+| `CHANGELOG.md` | ✅ | 变更记录 |
+| `README.md` | ✅ | 硬件接线 + 编译说明 |
+| `platformio.ini` | ✅ | PlatformIO 配置 |
+| `src/main.cpp` | ✅ | 主程序 |
+| `include/config.h` | ✅ | 配置常量（WiFi/MQTT/引脚） |
+| `include/log.h` | ✅ | 日志宏（已有模板） |
+
+## 后端接口规范
+
+详见 P008-env-monitor 仓库的 `CONTRIBUTING.md`。
+
+## 心跳上报字段
+
+所有心跳 POST 必须含以下字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `otherData.type` | string | `relay` / `sensor` / `sms-gateway` |
+| `otherData.relayOn` | bool | 继电器通电状态 |
+| `otherData.servoAngle` | int | 舵机当前角度（-1 表示无舵机） |
+| `otherData.chipId` | string | 芯片 ID |
+| `otherData.firmwareVer` | string | 固件版本 |
+
+> 📝 完整字段列表见 P008-env-monitor CONTRIBUTING.md 的"固件关联规范"章节。
