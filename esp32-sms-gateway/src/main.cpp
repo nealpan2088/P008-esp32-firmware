@@ -13,6 +13,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -22,7 +23,7 @@
 // ============================================================
 // 全局变量
 // ============================================================
-WiFiClient wifiClient;
+WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
 
 // A7670C 串口
@@ -350,6 +351,7 @@ void setup() {
   LOG_I("WiFi", "Connected, IP: %s", WiFi.localIP().toString().c_str());
 
   // ---------- 初始化 MQTT ----------
+  wifiClient.setInsecure();  // TLS 跳过证书验证
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
   mqttClient.setKeepAlive(30);
