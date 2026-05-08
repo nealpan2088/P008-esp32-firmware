@@ -132,28 +132,138 @@ bool initA7670C() {
   return _simReady;
 }
 
-// 发送短信（使用 TEXT 模式，英文/数字）
+// UTF-8 → UCS2 HEX（4 位 HEX 表示一个 Unicode 字符）
+void utf8ToUcs2Hex(const char* utf8, char* hexOut, size_t maxLen) {
+  size_t pos = 0;
+  while (*utf8 && pos < maxLen - 5) {
+    uint32_t codepoint = 0;
+    uint8_t c = (uint8_t)*utf8;
+
+    if (c < 0x80) {
+      codepoint = c;
+      utf8++;
+    } else if ((c & 0xE0) == 0xC0) {
+      codepoint = c & 0x1F;
+      codepoint = (codepoint << 6) | ((uint8_t)utf8[1] & 0x3F);
+      utf8 += 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      codepoint = c & 0x0F;
+      codepoint = (codepoint << 6) | ((uint8_t)utf8[1] & 0x3F);
+      codepoint = (codepoint << 6) | ((uint8_t)utf8[2] & 0x3F);
+      utf8 += 3;
+    } else {
+      utf8++;
+      continue;
+    }
+
+    if (codepoint <= 0xFFFF) {
+      pos += snprintf(hexOut + pos, maxLen - pos, "%04X", (unsigned int)codepoint);
+    }
+  }
+  hexOut[pos] = '\0';
+}
+
+// 手机号（纯数字）→ BCD 半字节交换 HEX（如 "861538..." → "683118..."）
+void phoneToBcdHex(const char* phone, char* bcdOut, size_t maxLen) {
+  int len = strlen(phone);
+  int pos = 0;
+  // 先加国际码 86（中国）
+  bcdOut[pos++] = '8';
+  bcdOut[pos++] = '6';
+  for (int i = 0; i < len; i += 2) {
+    if (i + 1 < len) {
+      bcdOut[pos++] = phone[i + 1];
+      bcdOut[pos++] = phone[i];
+    } else {
+      bcdOut[pos++] = 'F';
+      bcdOut[pos++] = phone[i];
+    }
+    if (pos >= (int)maxLen - 2) break;
+  }
+  bcdOut[pos] = '\0';
+}
+
+// 发送短信（PDU 模式，支持中英文）
+// AT 指令序列参考实际测试：
+//   AT+CMGF=0
+//   AT+CSCS="UCS2"
+//   AT+CSCA?  → 取 SMSC（UCS2 编码）
+//   AT+CMGS=<len>
+//   > <PDU HEX><Ctrl+Z>
 bool sendSms(const char* phone, const char* message) {
   LOG_I("SMS", "Sending to %s: %s", phone, message);
 
-  // 设置为 TEXT 模式
-  if (!sendAT("AT+CMGF=1", "OK", 2000)) {
-    LOG_E("SMS", "Failed to set SMS text mode");
+  // 1. PDU 模式
+  if (!sendAT("AT+CMGF=0", "OK", 2000)) {
+    LOG_E("SMS", "Failed to set PDU mode");
     return false;
   }
 
-  // AT+CMGS="13800138000"
-  char cmd[96];
-  snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phone);
+  // 2. UCS2 编码
+  if (!sendAT("AT+CSCS=\"UCS2\"", "OK", 2000)) {
+    LOG_E("SMS", "Failed to set UCS2 encoding");
+    return false;
+  }
+
+  // 3. 内容转 UCS2 HEX
+  char msgUcs2[512];
+  utf8ToUcs2Hex(message, msgUcs2, sizeof(msgUcs2));
+  int msgUcs2Len = strlen(msgUcs2) / 2; // UCS2 字节数
+
+  // 如果消息超过 140 字节，截断（GSM 限制）
+  int tpDataLen = msgUcs2Len;
+  if (tpDataLen > 140) tpDataLen = 140;
+
+  // 4. 手机号转 BCD HEX（含 86 国际码）
+  char phoneBcd[32];
+  phoneToBcdHex(phone, phoneBcd, sizeof(phoneBcd));
+  int phoneBcdLen = strlen(phoneBcd);
+  int phoneDigits = phoneBcdLen; // 半字节数
+
+  // 5. 组装 PDU HEX 字符串（不含 SMSC 地址）
+  //    格式： [1B firstOctet][1B TP-MR][1B phoneLen][1B phoneType][phoneBCD][1B PID][1B DCS][1B VP][1B dataLen][dataUCS2]
+  //    firstOctet=0x11, TP-MR=0x00, phoneType=0x91, PID=0x00, DCS=0x08(UCS2), VP=0xFF(24h)
+  char pduHex[1024];
+  int p = 0;
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "11");        // firstOctet
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "00");        // TP-MR
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "%02X", phoneDigits); // 手机号长度(半字节)
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "91");        // 手机号类型(国际)
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "%s", phoneBcd); // BCD
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "00");        // TP-PID
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "08");        // TP-DCS (UCS2)
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "FF");        // TP-VP (最大)
+  p += snprintf(pduHex + p, sizeof(pduHex) - p, "%02X", tpDataLen); // 数据长度
+  // 截断消息到 tpDataLen 字节
+  if (msgUcs2Len > tpDataLen) {
+    strncpy(pduHex + p, msgUcs2, tpDataLen * 2);
+    p += tpDataLen * 2;
+  } else {
+    p += snprintf(pduHex + p, sizeof(pduHex) - p, "%s", msgUcs2);
+  }
+  pduHex[p] = '\0';
+
+  // 填入 SMSC 地址（00 = 使用默认 SMSC，1 个半字节）
+  // PDU 总长度 = SMSC(0) + pduHex 长度 / 2（HEX 转字节）
+  char fullPdu[1024];
+  snprintf(fullPdu, sizeof(fullPdu), "00%s", pduHex);
+  int fullPduHexLen = strlen(fullPdu);
+
+  // AT+CMGS=<PDU 数据长度（不含 SMSC 头，即 pduHex 的字节数）>
+  char cmd[32];
+  int pduDataLen = (fullPduHexLen - 2) / 2; // 去掉开头的 "00"(1字节SMSC)之后的数据字节数
+  // 实际 AT+CMGS 的参数是"TP-Data-Length 之后的部分"的字节数 = 整个 PDU 不含 SMSC 长度半字节
+  // 标准 PDU: AT+CMGS=<payload_len> 其中 payload_len = pduDataLen
+  snprintf(cmd, sizeof(cmd), "AT+CMGS=%d", pduDataLen);
+
   if (!sendAT(cmd, ">", SMS_TIMEOUT_MS)) {
-    LOG_E("SMS", "Failed to enter SMS mode");
+    LOG_E("SMS", "Failed to enter PDU mode (no > prompt)");
     return false;
   }
 
-  // 发送短信内容 + Ctrl+Z 结束
-  A7670CSerial.print(message);
+  // 发送 PDU HEX 内容 + Ctrl+Z
+  A7670CSerial.print(fullPdu);
   A7670CSerial.write(26);  // Ctrl+Z
-  A7670CSerial.print("\r\n");
 
   // 等待 +CMGS 响应
   if (sendAT("", "+CMGS:", 15000)) {
