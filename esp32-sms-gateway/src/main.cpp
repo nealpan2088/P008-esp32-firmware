@@ -128,37 +128,83 @@ bool initA7670C() {
   // 检查 SIM 卡
   _simReady = sendAT("AT+CPIN?", "+CPIN: READY", 3000);
 
-  // 设置短信格式为 TEXT 模式
-  if (!sendAT("AT+CMGF=1", "OK", 2000)) {
-    LOG_W("A7670C", "Failed to set SMS text mode");
-  }
-
-  // 设置字符集
-  sendAT("AT+CSCS=\"GSM\"", "OK", 2000);
-
   LOG_I("A7670C", "Init done. Signal: %d, SIM: %s", _signalStrength, _simReady ? "READY" : "NO SIM");
   return _simReady;
 }
 
-// 发送短信
+// 中文 UCS2 编码转换（将 UTF-8 字符串转为 4 位 HEX 的 UCS2）
+void utf8ToUcs2Hex(const char* utf8, char* hexOut, size_t maxLen) {
+  size_t pos = 0;
+  while (*utf8 && pos < maxLen - 5) {
+    uint32_t codepoint = 0;
+    uint8_t c = *utf8;
+
+    if (c < 0x80) {
+      codepoint = c;
+      utf8++;
+    } else if ((c & 0xE0) == 0xC0) {
+      codepoint = c & 0x1F;
+      codepoint = (codepoint << 6) | (utf8[1] & 0x3F);
+      utf8 += 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      codepoint = c & 0x0F;
+      codepoint = (codepoint << 6) | (utf8[1] & 0x3F);
+      codepoint = (codepoint << 6) | (utf8[2] & 0x3F);
+      utf8 += 3;
+    } else {
+      utf8++; // skip 4-byte (not supported in GSM UCS2)
+      continue;
+    }
+
+    if (codepoint <= 0xFFFF) {
+      pos += snprintf(hexOut + pos, maxLen - pos, "%04X", (unsigned int)codepoint);
+    } else {
+      // BMP only, skip surrogates
+      continue;
+    }
+  }
+  hexOut[pos] = '\0';
+}
+
+// 发送短信（支持中文 UCS2 编码）
 bool sendSms(const char* phone, const char* message) {
   LOG_I("SMS", "Sending to %s: %s", phone, message);
 
-  // AT+CMGS="13800138000"
-  char cmd[64];
-  snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phone);
+  // 设置为 TEXT 模式
+  if (!sendAT("AT+CMGF=1", "OK", 2000)) {
+    LOG_E("SMS", "Failed to set SMS text mode");
+    return false;
+  }
+
+  // 设置为 UCS2 编码（支持中文）
+  if (!sendAT("AT+CSCS=\"UCS2\"", "OK", 2000)) {
+    LOG_E("SMS", "Failed to set UCS2 encoding");
+    return false;
+  }
+
+  // 将手机号转为 UCS2 HEX
+  char phoneUcs2[32];
+  utf8ToUcs2Hex(phone, phoneUcs2, sizeof(phoneUcs2));
+
+  // AT+CMGS="0031003800..."（UCS2 编码的手机号）
+  char cmd[96];
+  snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", phoneUcs2);
   if (!sendAT(cmd, ">", SMS_TIMEOUT_MS)) {
     LOG_E("SMS", "Failed to enter SMS mode");
     return false;
   }
 
-  // 发送短信内容 + Ctrl+Z 结束
-  A7670CSerial.print(message);
+  // 将短信内容转为 UCS2 HEX
+  char msgUcs2[512];
+  utf8ToUcs2Hex(message, msgUcs2, sizeof(msgUcs2));
+
+  // 发送 UCS2 编码的短信内容 + Ctrl+Z 结束
+  A7670CSerial.print(msgUcs2);
   A7670CSerial.write(26);  // Ctrl+Z
   A7670CSerial.print("\r\n");
 
   // 等待 +CMGS 响应
-  if (sendAT("", "+CMGS:", 8000)) {
+  if (sendAT("", "+CMGS:", 15000)) {
     LOG_I("SMS", "Sent successfully");
     return true;
   }
