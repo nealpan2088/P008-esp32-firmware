@@ -1,49 +1,54 @@
-// ESP32-S3 + A7670C 串口测试（简化版）
-// 只使用 Serial (UART0) 和 Serial2 (UART2)
-// A7670C: TX→GPIO16, RX→GPIO17
-// 不要在 loop 里打印多余内容，只在收到 AT 回复时输出
+// ESP32-S3 + A7670C 串口测试 v2（带调试输出）
+// 显示每步操作，方便排查问题
 
 #include <Arduino.h>
 
 #define UART2_RX  16
 #define UART2_TX  17
+#define LED  LED_BUILTIN
 
 void setup() {
-  delay(500);  // 等 USB CDC 稳定
+  pinMode(LED, OUTPUT);
+  digitalWrite(LED, HIGH);
+
+  delay(500);
   Serial.begin(115200);
   delay(100);
 
-  Serial.println("\nESP32-S3 A7670C Test Ready");
-  Serial.println("Type AT+xxx in SSCOM:");
+  Serial.println("\n==== A7670C Test v2 ====");
+  Serial.printf("UART2: RX=%d, TX=%d\n", UART2_RX, UART2_TX);
 
   Serial2.begin(115200, SERIAL_8N1, UART2_RX, UART2_TX);
+
+  // 一启动就发 AT 测试 A7670C
+  Serial.println("Sending: AT");
+  Serial2.println("AT");
 }
 
 void loop() {
-  static unsigned long lastPrint = 0;
+  static int count = 0;
 
-  // 从 Serial（SSCOM/COM口）读取，转发给 A7670C
+  // 读 Serial（来自调试器）
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     if (cmd.length() > 0) {
+      Serial.printf(">>> Forwarding: %s\n", cmd.c_str());
       Serial2.println(cmd);
-      // 不转发回 Serial，避免刷屏
     }
   }
 
-  // 从 A7670C 读取，转发回 Serial
+  // 读 Serial2（来自 A7670C）
   if (Serial2.available()) {
     String resp = Serial2.readStringUntil('\n');
     resp.trim();
-    if (resp.length() > 0 && !resp.startsWith("AT")) {
-      Serial.println(resp);
+    if (resp.length() > 0) {
+      Serial.printf("<<< A7670C: %s\n", resp.c_str());
     }
   }
 
-  // 每隔 5 秒打印一个 . 表示程序还活着
-  if (millis() - lastPrint > 5000) {
-    lastPrint = millis();
-    Serial.print(".");
-  }
+  // 每 3 秒闪一下灯表示活着
+  delay(3000);
+  digitalWrite(LED, !digitalRead(LED));
+  Serial.printf("[%d] .\n", ++count);
 }
