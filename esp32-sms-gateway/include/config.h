@@ -14,7 +14,7 @@
 #define MQTT_BROKER     "zghj.openyun.xin"
 #endif
 #ifndef MQTT_PORT
-#define MQTT_PORT       8883
+#define MQTT_PORT       1883
 #endif
 #ifndef MQTT_CLIENT_ID
 #define MQTT_CLIENT_ID  "sms-gateway-01"
